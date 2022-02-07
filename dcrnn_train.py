@@ -24,7 +24,11 @@ def main(args):
         with tf.Session(config=tf_config) as sess:
             supervisor = DCRNNSupervisor(adj_mx=adj_mx, **supervisor_config)
 
-            supervisor.train(sess=sess)
+            # if args.load_path is not None:
+                # supervisor.load(sess, args.load_path)
+                # print(f"LOADED WEIGHTS FROM {args.load_path}")
+
+            supervisor.train(sess=sess, model_filename=args.load_path)
 
 
 if __name__ == '__main__':
@@ -32,5 +36,6 @@ if __name__ == '__main__':
     parser.add_argument('--config_filename', default=None, type=str,
                         help='Configuration filename for restoring the model.')
     parser.add_argument('--use_cpu_only', default=False, type=bool, help='Set to true to only use cpu.')
+    parser.add_argument("--load-path", type=str, default=None)
     args = parser.parse_args()
     main(args)

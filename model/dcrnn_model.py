@@ -11,7 +11,7 @@ from model.dcrnn_cell import DCGRUCell
 
 
 class DCRNNModel(object):
-    def __init__(self, is_training, batch_size, scaler, adj_mx, **model_kwargs):
+    def __init__(self, is_training, batch_size, scaler, adj_mx, mc_dropout=None, **model_kwargs):
         # Scaler for data normalization.
         self._scaler = scaler
 
@@ -19,6 +19,10 @@ class DCRNNModel(object):
         self._loss = None
         self._mae = None
         self._train_op = None
+
+        self.mc_dropout = mc_dropout
+        if mc_dropout is not None:
+            print(f"(DCRNNModel) USING MC DROPOUT: {mc_dropout}")
 
         max_diffusion_step = int(model_kwargs.get('max_diffusion_step', 2))
         cl_decay_steps = int(model_kwargs.get('cl_decay_steps', 1000))
@@ -33,6 +37,8 @@ class DCRNNModel(object):
         input_dim = int(model_kwargs.get('input_dim', 1))
         output_dim = int(model_kwargs.get('output_dim', 1))
 
+        print("CURRICULUM LEARNING?", use_curriculum_learning) # TODO(piyush) remove
+
         # Input (batch_size, timesteps, num_sensor, input_dim)
         self._inputs = tf.placeholder(tf.float32, shape=(batch_size, seq_len, num_nodes, input_dim), name='inputs')
         # Labels: (batch_size, timesteps, num_sensor, input_dim), same format with input except the temporal dimension.
@@ -44,7 +50,8 @@ class DCRNNModel(object):
         cell = DCGRUCell(rnn_units, adj_mx, max_diffusion_step=max_diffusion_step, num_nodes=num_nodes,
                          filter_type=filter_type)
         cell_with_projection = DCGRUCell(rnn_units, adj_mx, max_diffusion_step=max_diffusion_step, num_nodes=num_nodes,
-                                         num_proj=output_dim, filter_type=filter_type)
+                                         num_proj=output_dim, filter_type=filter_type,
+                                         mc_dropout=mc_dropout)
         encoding_cells = [cell] * num_rnn_layers
         decoding_cells = [cell] * (num_rnn_layers - 1) + [cell_with_projection]
         encoding_cells = tf.contrib.rnn.MultiRNNCell(encoding_cells, state_is_tuple=True)

@@ -53,7 +53,9 @@ class DCRNNSupervisor(object):
             with tf.variable_scope('DCRNN', reuse=True):
                 self._test_model = DCRNNModel(is_training=False, scaler=scaler,
                                               batch_size=self._data_kwargs['test_batch_size'],
-                                              adj_mx=adj_mx, **self._model_kwargs)
+                                              adj_mx=adj_mx,
+                                              mc_dropout=os.environ.get("MCDROPOUT"),
+                                              **self._model_kwargs)
 
         # Learning rate.
         self._lr = tf.get_variable('learning_rate', shape=(), initializer=tf.constant_initializer(0.01),
@@ -150,7 +152,9 @@ class DCRNNSupervisor(object):
                 'outputs': model.outputs
             })
 
-        for _, (x, y) in enumerate(data_generator):
+        # for _, (x, y) in enumerate(data_generator):
+        import tqdm
+        for _, (x, y) in tqdm.tqdm(enumerate(data_generator)): # TODO(piyush) remove
             feed_dict = {
                 model.inputs: x,
                 model.labels: y,
@@ -198,6 +202,7 @@ class DCRNNSupervisor(object):
         if model_filename is not None:
             saver.restore(sess, model_filename)
             self._epoch = epoch + 1
+            print(f"LOADED WEIGHTS FROM {model_filename}")
         else:
             sess.run(tf.global_variables_initializer())
         self._logger.info('Start training ...')
@@ -294,6 +299,73 @@ class DCRNNSupervisor(object):
         }
         return outputs
 
+    def evaluate_varbins(self, sess, nbins, percentile=False):
+        global_step = sess.run(tf.train.get_or_create_global_step())
+        test_results = self.run_epoch_generator(sess, self._test_model,
+                                                self._data['test_loader'].get_iterator(),
+                                                return_output=True,
+                                                training=False)
+
+        # # y_preds:  a list of (batch_size, horizon, num_nodes, output_dim)
+        test_loss, y_preds = test_results['loss'], test_results['outputs']
+        y_preds = np.concatenate(y_preds, axis=0)
+
+        x_test, y_test = self._data["x_test"], self._data["y_test"]
+        scaler = self._data["scaler"]
+
+        horizon_i = y_test.shape[1] - 1
+        y_truth = scaler.inverse_transform(self._data['y_test'][:, horizon_i, :, 0])
+        y_pred = scaler.inverse_transform(y_preds[:y_truth.shape[0], horizon_i, :, 0])
+
+        stds = x_test[..., 0].std(axis=1).mean(axis=-1)
+        if percentile:
+            sorted_idx = np.argsort(stds)
+            sorted_stds = stds[sorted_idx]
+            bin_size = len(stds) // nbins
+            bins = [
+                (
+                    round(sorted_stds[i * bin_size], 2),
+                    round(sorted_stds[min((i + 1) * bin_size, len(stds) - 1)], 2),
+                    sorted_idx[i * bin_size : (i + 1) * bin_size]
+                )
+                for i in range(nbins)
+            ]
+        else:
+            endpoints = np.linspace(stds.min(), stds.max(), num=nbins + 1)
+            bins = [
+                (
+                    round(endpoints[i], 2),
+                    round(endpoints[i + 1], 2),
+                    (stds >= endpoints[i]) & (stds <= endpoints[i + 1])
+                )
+                for i in range(nbins)
+            ]
+
+        results = {}
+        for a, b, indices in bins:
+            mae = metrics.masked_mae_np(y_pred[indices], y_truth[indices], null_val=0)
+
+            if indices.dtype == np.bool:
+                proportion = indices.mean()
+            else:
+                proportion = len(indices) / len(stds)
+            print(f"Variance bin [{a}, {b}] ({round(proportion * 100, 2)}% of total) Test MAE:",
+                  mae)
+
+            results[(a, b)] = mae
+
+        return results
+
+
+    def evaluate_on_inputdata(self, sess, input_data, num_trials=1):
+        global_step = sess.run(tf.train.get_or_create_global_step())
+        model = self._test_model
+        return [
+            sess.run(model.outputs, feed_dict={model.inputs: input_data})
+            for _ in range(num_trials)
+        ]
+
+
     def load(self, sess, model_filename):
         """
         Restore from saved model.
@@ -306,7 +378,13 @@ class DCRNNSupervisor(object):
     def save(self, sess, val_loss):
         config = dict(self._kwargs)
         global_step = np.asscalar(sess.run(tf.train.get_or_create_global_step()))
-        prefix = os.path.join(self._log_dir, 'models-{:.4f}'.format(val_loss))
+        # prefix = os.path.join(self._log_dir, 'models-{:.4f}'.format(val_loss))
+        # TODO(piyush) remove
+        if "SAVEDIR" in os.environ:
+            prefix = os.path.join(os.environ["SAVEDIR"], 'models-{:.4f}'.format(val_loss))
+            print("NOTE - SAVING TO", os.environ["SAVEDIR"])
+        else:
+            prefix = os.path.join(self._log_dir, 'models-{:.4f}'.format(val_loss))
         config['train']['epoch'] = self._epoch
         config['train']['global_step'] = global_step
         config['train']['log_dir'] = self._log_dir

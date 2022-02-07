@@ -21,7 +21,8 @@ class DCGRUCell(RNNCell):
         pass
 
     def __init__(self, num_units, adj_mx, max_diffusion_step, num_nodes, num_proj=None,
-                 activation=tf.nn.tanh, reuse=None, filter_type="laplacian", use_gc_for_ru=True):
+                 activation=tf.nn.tanh, reuse=None, filter_type="laplacian", use_gc_for_ru=True,
+                 mc_dropout=None):
         """
 
         :param num_units:
@@ -43,6 +44,11 @@ class DCGRUCell(RNNCell):
         self._max_diffusion_step = max_diffusion_step
         self._supports = []
         self._use_gc_for_ru = use_gc_for_ru
+
+        self._mc_dropout = mc_dropout # TODO(piyush) remove
+        if mc_dropout is not None:
+            print("(DCGRUCell) USING MC DROPOUT", mc_dropout)
+
         supports = []
         if filter_type == "laplacian":
             supports.append(utils.calculate_scaled_laplacian(adj_mx, lambda_max=None))
@@ -106,7 +112,16 @@ class DCGRUCell(RNNCell):
                     w = tf.get_variable('w', shape=(self._num_units, self._num_proj))
                     batch_size = inputs.get_shape()[0].value
                     output = tf.reshape(new_state, shape=(-1, self._num_units))
-                    output = tf.reshape(tf.matmul(output, w), shape=(batch_size, self.output_size))
+                    # output = tf.reshape(tf.matmul(output, w), shape=(batch_size, self.output_size))
+
+                    # TODO(piyush) remove
+                    if self._mc_dropout is not None:
+                        p = float(self._mc_dropout)
+                        print(f"ADDING MC DROPOUT (p={p}) TO PROJECTION CELL")
+                        w2 = tf.nn.dropout(w, rate=p)
+                        output = tf.reshape(tf.matmul(output, w2), shape=(batch_size, self.output_size))
+                    else:
+                        output = tf.reshape(tf.matmul(output, w), shape=(batch_size, self.output_size))
         return output, new_state
 
     @staticmethod
